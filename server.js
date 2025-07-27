@@ -49,6 +49,60 @@ const getUserDirectory = (userEmail) => {
   return userDir;
 };
 
+// enhanced file filter for better iPhone compatibility
+const videoFileFilter = (req, file, cb) => {
+  console.log('File upload attempt:', {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size
+  });
+
+  // allowed extensions (case insensitive)
+  const allowedExtensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.3gp'];
+  
+  // allowed MIME types (including common iPhone video types)
+  const allowedMimeTypes = [
+    'video/mp4',
+    'video/avi',
+    'video/quicktime',
+    'video/x-msvideo',
+    'video/x-flv',
+    'video/webm',
+    'video/x-matroska',
+    'video/3gpp',
+    'video/x-m4v',
+    // additional iPhone/mobile video types
+    'video/mp4v-es',
+    'video/x-mp4',
+    'video/h264'
+  ];
+
+  const filename = file.originalname.toLowerCase();
+  const extension = path.extname(filename);
+  
+  // check extension
+  const hasValidExtension = allowedExtensions.includes(extension);
+  
+  // check MIME type (be more lenient with iPhone videos)
+  const hasValidMimeType = allowedMimeTypes.includes(file.mimetype) || 
+                          file.mimetype.startsWith('video/') ||
+                          // Some iPhone videos might have application/octet-stream initially
+                          (file.mimetype === 'application/octet-stream' && hasValidExtension);
+  
+  if (hasValidExtension || hasValidMimeType) {
+    console.log('File accepted:', filename);
+    return cb(null, true);
+  } else {
+    console.log('File rejected:', {
+      filename,
+      mimetype: file.mimetype,
+      extension,
+      reason: 'Invalid file type'
+    });
+    cb(new Error(`Only video files are allowed. Detected type: ${file.mimetype}, extension: ${extension}`));
+  }
+};
+
 // storage configuration for multer
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -68,17 +122,7 @@ const upload = multer({
     fileSize: 500 * 1024 * 1024, // 500MB limit
     fieldSize: 500 * 1024 * 1024 // Also set field size limit
   },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /mp4|avi|mov|wmv|flv|webm|mkv/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only video files are allowed'));
-    }
-  }
+  fileFilter: videoFileFilter
 });
 
 // get base URL with subdirectory
@@ -180,17 +224,26 @@ app.get('/nitroshare/api/health', (req, res) => {
 app.post('/nitroshare/api/upload', authenticateToken, (req, res, next) => {
   upload.single('video')(req, res, (err) => {
     if (err instanceof multer.MulterError) {
+      console.error('Multer error:', err);
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({ error: 'File too large. Maximum size is 500MB.' });
       }
       return res.status(400).json({ error: err.message });
     } else if (err) {
+      console.error('Upload error:', err);
       return res.status(400).json({ error: err.message });
     }
     
     if (!req.file) {
       return res.status(400).json({ error: 'No video file uploaded' });
     }
+
+    console.log('File uploaded successfully:', {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype
+    });
 
     const safeEmail = req.user.email.replace(/[^a-zA-Z0-9]/g, '_');
     const baseUrl = getBaseUrl(req);
@@ -220,7 +273,7 @@ app.get('/nitroshare/api/videos', authenticateToken, (req, res) => {
     const videos = files
       .filter(file => {
         const ext = path.extname(file).toLowerCase();
-        return ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv'].includes(ext);
+        return ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.3gp'].includes(ext);
       })
       .map(file => {
         const filePath = path.join(userDir, file);
@@ -356,10 +409,6 @@ app.get('/nitroshare/share/:userEmail/:filename', (req, res) => {
             <p><strong>Direct Link:</strong> <a href="${videoUrl}" target="_blank">${videoUrl}</a></p>
         </div>
         <div class="share-buttons">
-            <a href="https://twitter.com/intent/tweet?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent('Check out this video!')}" 
-               target="_blank" class="share-button">Share on Twitter</a>
-            <a href="https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}" 
-               target="_blank" class="share-button">Share on Facebook</a>
             <button onclick="copyToClipboard('${shareUrl}')" class="share-button">Copy Link</button>
         </div>
     </div>
