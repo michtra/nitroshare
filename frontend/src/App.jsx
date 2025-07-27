@@ -10,6 +10,7 @@ function App() {
   const [videos, setVideos] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     const script = document.createElement('script');
@@ -107,15 +108,56 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    // check file size (500MB limit)
+  // file validation function
+  const validateVideoFile = (file) => {
+    // file size (500MB limit)
     const maxSize = 500 * 1024 * 1024; // 500MB in bytes
     if (file.size > maxSize) {
-      alert('File size exceeds 500MB limit. Please choose a smaller file.');
-      event.target.value = '';
+      return { valid: false, error: 'File size exceeds 500MB limit. Please choose a smaller file.' };
+    }
+
+    // more comprehensive video type checking
+    const allowedExtensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.3gp'];
+    const allowedMimeTypes = [
+      'video/mp4',
+      'video/avi',
+      'video/quicktime',
+      'video/x-msvideo',
+      'video/x-flv',
+      'video/webm',
+      'video/x-matroska',
+      'video/3gpp',
+      'video/x-m4v'
+    ];
+
+    const fileName = file.name.toLowerCase();
+    const fileExtension = fileName.substring(fileName.lastIndexOf('.'));
+    
+    // check by extension first
+    const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+    
+    // then MIME type
+    const hasValidMimeType = allowedMimeTypes.includes(file.type) || file.type.startsWith('video/');
+    
+    // if file has video in the type or valid extension, consider it valid
+    // helps with iPhone videos that might have different MIME types
+    if (hasValidExtension || hasValidMimeType) {
+      return { valid: true };
+    }
+
+    return { 
+      valid: false, 
+      error: `Unsupported file type. Please upload a video file.\nFile type detected: ${file.type || 'unknown'}\nFile extension: ${fileExtension}` 
+    };
+  };
+
+  const processFileUpload = async (file) => {
+    if (!file) return;
+
+    // Validate the file
+    const validation = validateVideoFile(file);
+    if (!validation.valid) {
+      alert(validation.error);
       return;
     }
 
@@ -138,13 +180,12 @@ function App() {
           setUploadProgress(percentCompleted);
         },
         timeout: 10 * 60 * 1000, // 10 minutes timeout
-        maxContentLength: maxSize,
-        maxBodyLength: maxSize
+        maxContentLength: 500 * 1024 * 1024,
+        maxBodyLength: 500 * 1024 * 1024
       });
 
       alert('Video uploaded successfully!');
       fetchVideos();
-      event.target.value = ''; // Reset file input
     } catch (error) {
       console.error('Upload failed:', error);
       if (error.response?.status === 401 || error.response?.status === 403) {
@@ -160,6 +201,41 @@ function App() {
     } finally {
       setUploading(false);
       setUploadProgress(0);
+    }
+  };
+
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    await processFileUpload(file);
+    event.target.value = ''; // reset file input
+  };
+
+  // drag and drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!uploading) {
+      setDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+
+    if (uploading) return;
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      const file = files[0]; // only process the first file
+      await processFileUpload(file);
     }
   };
 
@@ -228,7 +304,12 @@ function App() {
       <main className="main-content">
         <div className="upload-section">
           <h2>Upload Video</h2>
-          <div className="upload-area">
+          <div 
+            className={`upload-area ${uploading ? 'disabled' : ''} ${dragOver ? 'drag-over' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <input
               type="file"
               accept="video/*"
@@ -238,8 +319,13 @@ function App() {
               id="video-upload"
             />
             <label htmlFor="video-upload" className={`upload-label ${uploading ? 'disabled' : ''}`}>
-              {uploading ? 'Uploading...' : 'Choose Video File'}
+              {uploading ? 'Uploading...' : dragOver ? 'Drop video here' : 'Choose Video File'}
             </label>
+            {!uploading && !dragOver && (
+              <p className="drag-hint">
+                Click to browse or drag a video file here
+              </p>
+            )}
             {uploading && (
               <div className="progress-container">
                 <div className="progress-bar">
@@ -253,7 +339,7 @@ function App() {
             )}
           </div>
           <p className="upload-info">
-            Supported formats: MP4, AVI, MOV, WMV, FLV, WebM, MKV<br/>
+            Supported formats: MP4, AVI, MOV, WMV, FLV, WebM, MKV, M4V, 3GP<br/>
             Maximum file size: 500MB<br/>
             Videos are automatically deleted after 24 hours
           </p>
