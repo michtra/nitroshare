@@ -103,6 +103,18 @@ const videoFileFilter = (req, file, cb) => {
   }
 };
 
+// template engine function for rendering the shared video page
+function renderTemplate(templatePath, data) {
+  let template = fs.readFileSync(templatePath, 'utf8');
+  
+  // Replace all {{variable}} placeholders with actual data
+  Object.keys(data).forEach(key => {
+    const regex = new RegExp(`{{${key}}}`, 'g');
+    template = template.replace(regex, data[key]);
+  });
+  
+  return template;
+}
 // storage configuration for multer
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -305,125 +317,21 @@ app.get('/nitroshare/share/:userEmail/:filename', (req, res) => {
   const videoUrl = `${baseUrl}/uploads/${userEmail}/${filename}`;
   const shareUrl = `${baseUrl}/share/${userEmail}/${filename}`;
   
-  const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Video - ${filename}</title>
-    
-    <!-- Open Graph Meta Tags for Facebook, LinkedIn, etc. -->
-    <meta property="og:title" content="Shared Video - ${filename}">
-    <meta property="og:description" content="Watch this shared video">
-    <meta property="og:type" content="video.other">
-    <meta property="og:url" content="${shareUrl}">
-    <meta property="og:video" content="${videoUrl}">
-    <meta property="og:video:secure_url" content="${videoUrl}">
-    <meta property="og:video:type" content="video/mp4">
-    <meta property="og:video:width" content="1280">
-    <meta property="og:video:height" content="720">
-    
-    <!-- Twitter Card Meta Tags -->
-    <meta name="twitter:card" content="player">
-    <meta name="twitter:title" content="Shared Video - ${filename}">
-    <meta name="twitter:description" content="Watch this shared video">
-    <meta name="twitter:player" content="${shareUrl}">
-    <meta name="twitter:player:width" content="1280">
-    <meta name="twitter:player:height" content="720">
-    
-    <!-- Discord and other platforms -->
-    <meta name="theme-color" content="#7289DA">
-    
-    <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .video-container {
-            position: relative;
-            width: 100%;
-            padding-bottom: 56.25%; /* 16:9 aspect ratio */
-            height: 0;
-            margin-bottom: 20px;
-        }
-        video {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            border-radius: 4px;
-        }
-        .info {
-            color: #666;
-            font-size: 14px;
-        }
-        .share-buttons {
-            margin-top: 20px;
-        }
-        .share-button {
-            display: inline-block;
-            margin-right: 10px;
-            padding: 8px 16px;
-            background: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        .share-button:hover {
-            background: #0056b3;
-        }
-        @media (max-width: 768px) {
-            body {
-                padding: 10px;
-            }
-            .container {
-                padding: 15px;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Shared Video</h1>
-        <div class="video-container">
-            <video controls preload="metadata">
-                <source src="${videoUrl}" type="video/mp4">
-                Your browser does not support the video tag.
-            </video>
-        </div>
-        <div class="info">
-            <p><strong>Filename:</strong> ${filename}</p>
-            <p><strong>Direct Link:</strong> <a href="${videoUrl}" target="_blank">${videoUrl}</a></p>
-        </div>
-        <div class="share-buttons">
-            <button onclick="copyToClipboard('${shareUrl}')" class="share-button">Copy Link</button>
-        </div>
-    </div>
-    
-    <script>
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(function() {
-                alert('Link copied to clipboard!');
-            });
-        }
-    </script>
-</body>
-</html>`;
+  // check if template exists
+  const templatePath = path.join(__dirname, 'templates', 'share-template.html');
   
-  res.send(html);
+  if (fs.existsSync(templatePath)) {
+    // use the template file
+    const html = renderTemplate(templatePath, {
+      filename: filename,
+      videoUrl: videoUrl,
+      shareUrl: shareUrl
+    });
+    res.send(html);
+  } else {
+    // fallback to inline HTML if template doesn't exist
+    res.status(500).send('Share template not found. Please create templates/share-template.html');
+  }
 });
 
 // delete video endpoint - user can only delete their own videos
