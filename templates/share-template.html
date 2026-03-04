@@ -11,17 +11,9 @@
     <meta property="og:video" content="{{videoUrl}}">
     <meta property="og:video:secure_url" content="{{videoUrl}}">
     <meta property="og:video:type" content="video/mp4">
-    <!-- These should be dynamically set based on actual video dimensions -->
-    <meta property="og:video:width" content="{{videoWidth}}">
-    <meta property="og:video:height" content="{{videoHeight}}">
-    <meta property="og:image" content="{{thumbnailUrl}}">
-    
     <!-- Twitter Card Meta Tags -->
     <meta name="twitter:card" content="player">
     <meta name="twitter:player" content="{{shareUrl}}">
-    <meta name="twitter:player:width" content="{{videoWidth}}">
-    <meta name="twitter:player:height" content="{{videoHeight}}">
-    <meta name="twitter:image" content="{{thumbnailUrl}}">
     
     <!-- Discord and other platforms -->
     <meta name="theme-color" content="#3b82f6">
@@ -117,7 +109,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 400px;
+            aspect-ratio: 16/9;
         }
 
         .video-container.landscape {
@@ -266,7 +258,7 @@
 
     <div class="container">
         <div class="video-wrapper">
-            <div class="video-container {{aspectRatioClass}}" id="videoContainer">
+            <div class="video-container" id="videoContainer">
                 <div class="loading-spinner" id="loadingSpinner"></div>
                 <video id="videoPlayer" controls preload="metadata">
                     <source src="{{videoUrl}}" type="video/mp4">
@@ -308,9 +300,14 @@
         const loadingSpinner = document.getElementById('loadingSpinner');
         const toast = document.getElementById('toast');
 
-        // video is already classified server-side, just handle loading states
         video.addEventListener('loadedmetadata', function() {
             loadingSpinner.style.display = 'none';
+            videoContainer.style.aspectRatio = video.videoWidth + '/' + video.videoHeight;
+            if (video.videoHeight > video.videoWidth) {
+                videoContainer.style.maxWidth = '500px';
+            } else {
+                videoContainer.style.maxWidth = '';
+            }
         });
 
         // copy to clipboard function

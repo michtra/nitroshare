@@ -1,6 +1,199 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
+
+function mergeRegions(regions) {
+  if (!regions.length) return [];
+  const sorted = [...regions].sort((a, b) => a.start - b.start);
+  const merged = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (sorted[i].start <= last.end) {
+      last.end = Math.max(last.end, sorted[i].end);
+    } else {
+      merged.push({ ...sorted[i] });
+    }
+  }
+  return merged;
+}
+
+function TrimModal({ video, token, onClose, onTrimSaved }) {
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [keepRegions, setKeepRegions] = useState([]);
+  const [pendingStart, setPendingStart] = useState(null);
+  const [trimming, setTrimming] = useState(false);
+  const videoRef = useRef(null);
+  const timelineRef = useRef(null);
+  const scrubbingRef = useRef(false);
+
+  const formatTime = (s) => {
+    if (!s || isNaN(s)) return '0:00';
+    return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  };
+
+  const scrubFromPointer = (e) => {
+    if (!timelineRef.current || !videoRef.current?.duration) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    videoRef.current.currentTime = frac * videoRef.current.duration;
+  };
+
+  useEffect(() => {
+    const handleMove = (e) => { if (scrubbingRef.current) scrubFromPointer(e); };
+    const handleUp = () => { scrubbingRef.current = false; };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, []);
+
+  const markStart = () => {
+    const t = videoRef.current?.currentTime ?? 0;
+    setPendingStart(t);
+  };
+
+  const markEnd = () => {
+    if (pendingStart === null || !videoRef.current) return;
+    const t = videoRef.current.currentTime;
+    const start = Math.min(pendingStart, t);
+    const end = Math.max(pendingStart, t);
+    if (end - start < 0.5) {
+      alert('Section must be at least 0.5 seconds.');
+      return;
+    }
+    setKeepRegions(prev => [...prev, { id: Date.now(), start, end }]);
+    setPendingStart(null);
+  };
+
+  const mergedKeep = mergeRegions(keepRegions);
+  const keptDuration = mergedKeep.reduce((sum, s) => sum + (s.end - s.start), 0);
+  const pct = (t) => `${(t / (duration || 1)) * 100}%`;
+
+  const saveTrim = async () => {
+    if (!mergedKeep.length) { alert('Mark at least one section to keep.'); return; }
+    setTrimming(true);
+    try {
+      await axios.post(
+        `/nitroshare/api/videos/${video.filename}/trim`,
+        { keepSegments: mergedKeep },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      onTrimSaved();
+      onClose();
+    } catch (err) {
+      alert('Trim failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setTrimming(false);
+    }
+  };
+
+  return (
+    <div className="trim-modal-overlay" onClick={onClose}>
+      <div className="trim-modal" onClick={e => e.stopPropagation()}>
+        <div className="trim-modal-header">
+          <h3>Keep Working Sets</h3>
+          <button onClick={onClose} className="trim-close-btn">Close</button>
+        </div>
+
+        <video
+          ref={videoRef}
+          src={video.videoUrl}
+          controls
+          playsInline
+          onLoadedMetadata={() => setDuration(videoRef.current.duration)}
+          onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+          className="trim-video-player"
+        />
+
+        <div
+          className="trim-timeline"
+          ref={timelineRef}
+          onPointerDown={e => { e.preventDefault(); scrubbingRef.current = true; scrubFromPointer(e); }}
+        >
+          {duration > 0 && mergedKeep.map((seg, i) => (
+            <div key={i} className="trim-keep-region" style={{ left: pct(seg.start), width: pct(seg.end - seg.start) }} />
+          ))}
+          {duration > 0 && keepRegions.map(r => (
+            <div
+              key={r.id}
+              className="trim-keep-region-clickable"
+              style={{ left: pct(r.start), width: pct(r.end - r.start) }}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => setKeepRegions(prev => prev.filter(x => x.id !== r.id))}
+            >
+              <span className="trim-keep-label">{formatTime(r.end - r.start)}</span>
+            </div>
+          ))}
+          {pendingStart !== null && duration > 0 && (
+            <div className="trim-pending-marker" style={{ left: pct(pendingStart) }} />
+          )}
+          {duration > 0 && (
+            <div className="trim-playhead" style={{ left: pct(currentTime) }} />
+          )}
+        </div>
+
+        <div className="trim-time-row">
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
+        </div>
+
+        <div className="trim-mark-buttons">
+          {pendingStart === null ? (
+            <button onClick={markStart} disabled={!duration} className="trim-mark-btn trim-start-btn">
+              Mark Keep Start
+            </button>
+          ) : (
+            <>
+              <button onClick={() => setPendingStart(null)} className="trim-mark-btn trim-cancel-btn">
+                Cancel ({formatTime(pendingStart)})
+              </button>
+              <button onClick={markEnd} className="trim-mark-btn trim-end-btn">
+                Mark Keep End
+              </button>
+            </>
+          )}
+        </div>
+
+        {pendingStart !== null && (
+          <p className="trim-pending-hint">
+            Keep starts at {formatTime(pendingStart)} - play to where the set ends, then tap Mark Keep End
+          </p>
+        )}
+
+        {keepRegions.length > 0 && (
+          <div className="trim-regions-list">
+            {[...keepRegions].sort((a, b) => a.start - b.start).map((r, i) => (
+              <div key={r.id} className="trim-region-item">
+                <span>Set {i + 1}: {formatTime(r.start)} - {formatTime(r.end)} ({formatTime(r.end - r.start)})</span>
+                <button onClick={() => setKeepRegions(prev => prev.filter(x => x.id !== r.id))} className="trim-region-delete">
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="trim-stats">
+          <span>Original: {formatTime(duration)}</span>
+          <span>Keeping: {formatTime(keptDuration)}</span>
+        </div>
+
+        <div className="trim-actions">
+          {keepRegions.length > 0 && (
+            <button onClick={() => setKeepRegions([])} className="action-button delete-button">Clear All</button>
+          )}
+          <button onClick={onClose} className="action-button delete-button">Cancel</button>
+          <button onClick={saveTrim} disabled={trimming || !duration || !keepRegions.length} className="action-button share-button">
+            {trimming ? 'Processing...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // axios base URL
 const API_BASE_URL = '/nitroshare/api';
@@ -11,11 +204,12 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragOver, setDragOver] = useState(false);
+  const [trimVideo, setTrimVideo] = useState(null);
 
   useEffect(() => {
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
-    script.onload = initializeGoogleSignIn;
+    script.onload = restoreSession;
     document.body.appendChild(script);
 
     return () => {
@@ -25,9 +219,24 @@ function App() {
     };
   }, []);
 
-  const initializeGoogleSignIn = () => {
-    // we'll initialize the OAuth2 client directly for popup sign-in
-    console.log('Google Identity Services loaded');
+  const restoreSession = async () => {
+    const saved = localStorage.getItem('nitroshare_user');
+    if (!saved) return;
+    try {
+      const savedUser = JSON.parse(saved);
+      // validate stored token is still active
+      const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${savedUser.token}` }
+      });
+      if (!response.ok) {
+        localStorage.removeItem('nitroshare_user');
+        return;
+      }
+      setUser(savedUser);
+      fetchVideos(savedUser.token);
+    } catch {
+      localStorage.removeItem('nitroshare_user');
+    }
   };
 
   const signIn = () => {
@@ -55,13 +264,15 @@ function App() {
           
           const userInfo = await response.json();
           
-          setUser({
+          const userData = {
             name: userInfo.name,
             email: userInfo.email,
             imageUrl: userInfo.picture,
             token: tokenResponse.access_token
-          });
-          
+          };
+          setUser(userData);
+          localStorage.setItem('nitroshare_user', JSON.stringify(userData));
+
           fetchVideos(tokenResponse.access_token);
         } catch (error) {
           console.error('Failed to get user info:', error);
@@ -82,11 +293,11 @@ function App() {
 
   const signOut = () => {
     if (window.google && user?.token) {
-      // revoke the token
       window.google.accounts.oauth2.revoke(user.token, () => {
         console.log('Token revoked successfully');
       });
     }
+    localStorage.removeItem('nitroshare_user');
     setUser(null);
     setVideos([]);
   };
@@ -366,21 +577,27 @@ function App() {
                       <span>Uploaded: {formatDate(video.uploadTime)}</span>
                     </p>
                     <div className="video-actions">
-                      <button 
+                      <button
                         onClick={() => copyToClipboard(video.shareUrl)}
                         className="action-button share-button"
                       >
                         Copy Share Link
                       </button>
-                      <a 
-                        href={video.shareUrl} 
-                        target="_blank" 
+                      <a
+                        href={video.shareUrl}
+                        target="_blank"
                         rel="noopener noreferrer"
                         className="action-button view-button"
                       >
                         View Share Page
                       </a>
-                      <button 
+                      <button
+                        onClick={() => setTrimVideo(video)}
+                        className="action-button trim-button"
+                      >
+                        Trim
+                      </button>
+                      <button
                         onClick={() => deleteVideo(video.filename)}
                         className="action-button delete-button"
                       >
@@ -394,6 +611,14 @@ function App() {
           )}
         </div>
       </main>
+      {trimVideo && (
+        <TrimModal
+          video={trimVideo}
+          token={user.token}
+          onClose={() => setTrimVideo(null)}
+          onTrimSaved={() => { fetchVideos(); setTrimVideo(null); }}
+        />
+      )}
     </div>
   );
 }

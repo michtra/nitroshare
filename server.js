@@ -7,6 +7,7 @@ const fs = require('fs-extra');
 const cron = require('node-cron');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const { execFile } = require('child_process');
 require('dotenv').config();
 
 const app = express();
@@ -331,6 +332,78 @@ app.get('/nitroshare/share/:userEmail/:filename', (req, res) => {
   } else {
     // fallback to inline HTML if template doesn't exist
     res.status(500).send('Share template not found. Please create templates/share-template.html');
+  }
+});
+
+// trim video endpoint - concatenates kept segments using filter_complex
+app.post('/nitroshare/api/videos/:filename/trim', authenticateToken, async (req, res) => {
+  const filename = req.params.filename;
+  const { keepSegments } = req.body;
+
+  if (!Array.isArray(keepSegments) || keepSegments.length === 0) {
+    return res.status(400).json({ error: 'keepSegments must be a non-empty array' });
+  }
+  for (const seg of keepSegments) {
+    if (typeof seg.start !== 'number' || typeof seg.end !== 'number' || seg.start >= seg.end || seg.start < 0) {
+      return res.status(400).json({ error: 'Invalid segment: ' + JSON.stringify(seg) });
+    }
+  }
+
+  const userDir = getUserDirectory(req.user.email);
+  const inputPath = path.join(userDir, filename);
+  if (!fs.existsSync(inputPath)) {
+    return res.status(404).json({ error: 'Video not found' });
+  }
+
+  const ext = path.extname(filename);
+  const baseName = path.basename(filename, ext);
+  const outputFilename = `${baseName}_trim_${Date.now()}.mp4`;
+  const outputPath = path.join(userDir, outputFilename);
+
+  // probe whether the file has an audio stream
+  const hasAudio = await new Promise((resolve) => {
+    execFile('ffmpeg', ['-i', inputPath], (_err, _stdout, stderr) => {
+      resolve(/Stream.*Audio/i.test(stderr));
+    });
+  });
+
+  // build filter_complex that trims and concatenates all segments
+  const n = keepSegments.length;
+  const filterParts = [];
+  keepSegments.forEach((seg, i) => {
+    filterParts.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[v${i}]`);
+    if (hasAudio) filterParts.push(`[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[a${i}]`);
+  });
+  const streamRefs = keepSegments.map((_, i) => (hasAudio ? `[v${i}][a${i}]` : `[v${i}]`)).join('');
+  filterParts.push(`${streamRefs}concat=n=${n}:v=1:a=${hasAudio ? 1 : 0}[outv]${hasAudio ? '[outa]' : ''}`);
+
+  const args = [
+    '-i', inputPath,
+    '-filter_complex', filterParts.join(';'),
+    '-map', '[outv]',
+    ...(hasAudio ? ['-map', '[outa]'] : []),
+    '-y', outputPath
+  ];
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile('ffmpeg', args, (err, _stdout, stderr) => {
+        if (err) reject(new Error(stderr || err.message));
+        else resolve();
+      });
+    });
+
+    const safeEmail = req.user.email.replace(/[^a-zA-Z0-9]/g, '_');
+    const baseUrl = getBaseUrl(req);
+    res.json({
+      message: 'Video trimmed successfully',
+      filename: outputFilename,
+      videoUrl: `${baseUrl}/uploads/${safeEmail}/${outputFilename}`,
+      shareUrl: `${baseUrl}/share/${safeEmail}/${outputFilename}`
+    });
+  } catch (error) {
+    console.error('FFmpeg trim error:', error.message);
+    res.status(500).json({ error: 'Trim failed: ' + error.message });
   }
 });
 
